@@ -12,13 +12,19 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-gst-plugins-base-1.0 gstreamer1.0-plugins-good gstreamer1.0-pulseaudio xvfb dbus-x11 desktop-file-utils
-      - name: Protocol and lifecycle tests
-        run: PYTHONPATH=Linux /usr/bin/python3 -m unittest discover -s Linux/tests -p test_client.py -v
-      - name: GTK and GStreamer tests
-        run: dbus-run-session -- xvfb-run -a env GDK_BACKEND=x11 PYTHONPATH=Linux /usr/bin/python3 -m unittest discover -s Linux/tests -p test_desktop.py -v
+          sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-gst-plugins-base-1.0 gir1.2-atspi-2.0 gir1.2-secret-1 gstreamer1.0-plugins-good gstreamer1.0-pulseaudio xvfb dbus-x11 desktop-file-utils weston
+      - name: Protocol, lifecycle, desktop, accessibility, and portal tests
+        run: dbus-run-session -- xvfb-run -a env GDK_BACKEND=x11 PYTHONPATH=Linux /usr/bin/python3 -m unittest discover -s Linux/tests -p 'test_*.py' -v
+      - name: Real Wayland accessibility insertion
+        run: sh scripts/test-linux-wayland.sh
       - name: Install and validate launcher
         run: |
           sh Linux/install.sh
           desktop-file-validate "$HOME/.local/share/applications/io.github.vitor_hbr.Sotto.desktop"
           "$HOME/.local/bin/sotto-linux" --help
+      - name: Build and install Debian package
+        run: |
+          sh scripts/build-linux-client.sh
+          sudo dpkg -i build/sotto-linux_0.2.0_all.deb
+          /usr/bin/sotto-linux --help
+          desktop-file-validate /usr/share/applications/io.github.vitor_hbr.Sotto.desktop

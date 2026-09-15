@@ -6,15 +6,72 @@ import os
 import subprocess
 import tempfile
 import sys
+import json
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 import unittest
 from unittest.mock import patch
 
 from sotto_linux.app import Application
 from sotto_linux.audio import Microphone
+from sotto_linux.api import Client
+from sotto_linux.session import record
 from gi.repository import Gio, GLib, Gst
 
 
 class DesktopTests(unittest.TestCase):
+    def test_capture_to_real_http_upload_and_completed_transcript(self):
+        frames, sequences, finish = {}, {}, []
+        generation_id = str(uuid.uuid4())
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+            def do_POST(self):
+                data = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                path = urlsplit(self.path)
+                if path.path == "/v1/generations":
+                    result = {"id": generation_id, "settings": {"preferences": {"keepOriginalAudio": True}}}
+                elif "/audio/" in path.path:
+                    kind = path.path.rsplit("/", 1)[1]
+                    query = parse_qs(path.query)
+                    sequence = int(query["sequence"][0])
+                    assert sequence == sequences.get(kind, 0)
+                    sequences[kind] = sequence + 1
+                    frames[kind] = frames.get(kind, 0) + len(data) // (4 * int(query["channels"][0]))
+                    result = {"nextSequence": sequence + 1, "frameCount": frames[kind]}
+                else:
+                    finish.append(json.loads(data))
+                    result = {"id": generation_id, "status": "completed", "insertionText": "Olá, Linux!"}
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps(result).encode())
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        stop = threading.Event()
+        timer = threading.Timer(0.65, stop.set)
+        parse_launch = Gst.parse_launch
+        def synthetic(description):
+            return parse_launch(description.replace("pulsesrc name=source", "audiotestsrc name=source is-live=true ! audio/x-raw,rate=48000,channels=2"))
+        with patch("sotto_linux.audio.Gst.parse_launch", side_effect=synthetic):
+            microphone = Microphone(stop)
+        try:
+            timer.start()
+            client = Client(f"http://127.0.0.1:{server.server_port}")
+            result = record(client, {"id": "test", "name": "Linux"}, lambda: microphone,
+                            stop, threading.Event(), lambda _: None)
+            self.assertEqual(result["insertionText"], "Olá, Linux!")
+            self.assertEqual(finish, [{"inferenceFrames": frames["inference"], "originalFrames": frames["original"]}])
+            self.assertLessEqual(abs(frames["original"] - frames["inference"] * 3), 3)
+            self.assertEqual(microphone.pipeline.get_state(0)[1], Gst.State.NULL)
+        finally:
+            timer.cancel()
+            microphone.close()
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_remote_quit_reaches_running_instance(self):
         with tempfile.TemporaryDirectory() as config:
             env = dict(os.environ, XDG_CONFIG_HOME=config)
@@ -93,6 +150,40 @@ class DesktopTests(unittest.TestCase):
             while microphone.read() != b"":
                 pass
             self.assertEqual(microphone.read(), b"")
+        finally:
+            microphone.close()
+
+    def test_original_stereo_audio_keeps_source_rate_and_matches_inference_interval(self):
+        original = Gst.parse_launch
+        def synthetic(description):
+            return original(description.replace("pulsesrc name=source", "audiotestsrc name=source is-live=true ! audio/x-raw,rate=48000,channels=2"))
+        stop = threading.Event()
+        with patch("sotto_linux.audio.Gst.parse_launch", side_effect=synthetic):
+            microphone = Microphone(stop)
+        microphone.keep_original = True
+        try:
+            microphone.start()
+            inference_frames = 0
+            deadline = time.monotonic() + 0.65
+            while time.monotonic() < deadline:
+                pcm = microphone.read()
+                if pcm:
+                    inference_frames += len(pcm) // 4
+                    source, rate, channels, frames = microphone.original_audio(inference_frames)
+                    self.assertEqual((rate, channels), (48000, 2))
+                    self.assertEqual(frames, inference_frames * 3)
+                    self.assertEqual(len(source) % 8, 0)
+            stop.set()
+            microphone.finish()
+            while True:
+                pcm = microphone.read()
+                if pcm == b"":
+                    break
+                if pcm:
+                    inference_frames += len(pcm) // 4
+                    source, rate, channels, frames = microphone.original_audio(inference_frames)
+            self.assertGreater(inference_frames, 4000)
+            self.assertLessEqual(abs(frames - inference_frames * 3), 3)
         finally:
             microphone.close()
 

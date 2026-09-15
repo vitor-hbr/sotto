@@ -12,11 +12,13 @@ GENERATION_ID = str(uuid.uuid4())
 
 
 class Capture:
-    def __init__(self, stop, chunks=2):
+    def __init__(self, stop, chunks=2, rate=16000, channels=1):
         self.stop = stop
         self.remaining = chunks
         self.closed = False
         self.started = False
+        self.original_frames = 0
+        self.rate, self.channels = rate, channels
 
     def start(self):
         self.started = True
@@ -30,6 +32,12 @@ class Capture:
 
     def finish(self):
         pass
+
+    def original_audio(self, frames):
+        target = frames * self.rate // 16000
+        pcm = b"\0" * ((target - self.original_frames) * self.channels * 4)
+        self.original_frames = target
+        return pcm, self.rate, self.channels, target
 
     def close(self):
         self.closed = True
@@ -48,11 +56,11 @@ class FakeClient:
         self.calls.append(("create", device))
         return {"id": GENERATION_ID, "settings": {"preferences": {"keepOriginalAudio": self.keep}}}
 
-    def audio(self, generation_id, kind, sequence, pcm):
+    def audio(self, generation_id, kind, sequence, pcm, sample_rate=16000, channels=1):
         self.calls.append(("audio", kind, sequence, len(pcm)))
         if self.fail_upload:
             raise APIError("Disconnected")
-        self.frames[kind] = self.frames.get(kind, 0) + len(pcm) // 4
+        self.frames[kind] = self.frames.get(kind, 0) + len(pcm) // (4 * channels)
         return {"nextSequence": sequence + (2 if self.bad_receipt else 1), "frameCount": self.frames[kind]}
 
     def generation(self, generation_id, action="", payload=None):
@@ -61,9 +69,9 @@ class FakeClient:
 
 
 class SessionTests(unittest.TestCase):
-    def run_session(self, client, chunks=2, cancel=None, **kwargs):
+    def run_session(self, client, chunks=2, cancel=None, rate=16000, channels=1, **kwargs):
         stop = threading.Event()
-        capture = Capture(stop, chunks)
+        capture = Capture(stop, chunks, rate, channels)
         self.capture = capture
         return record(client, {"id": "test", "name": "test"}, lambda: capture,
                       stop, cancel or threading.Event(), lambda _: None, poll_seconds=0, **kwargs)
@@ -89,6 +97,14 @@ class SessionTests(unittest.TestCase):
         self.assertIn(("cancel", None), client.calls)
         self.assertFalse(any(call[0] == "finish" for call in client.calls))
         self.assertTrue(self.capture.closed)
+
+    def test_high_rate_original_audio_uses_independent_bounded_chunks(self):
+        client = FakeClient()
+        self.run_session(client, rate=192000, channels=8)
+        original = [call for call in client.calls if call[0] == "audio" and call[1] == "original"]
+        self.assertEqual([call[2] for call in original], [0, 1, 2, 3])
+        self.assertTrue(all(call[3] <= 1_048_576 for call in original))
+        self.assertIn(("finish", {"inferenceFrames": 8000, "originalFrames": 96000}), client.calls)
 
     def test_wrong_acknowledgement_cancels(self):
         client = FakeClient()

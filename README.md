@@ -2,16 +2,18 @@
 
 ## Linux-native fork
 
-This fork adds a **GTK 4 client for Ubuntu/GNOME on Wayland**, using the existing
-Linux Whisper/llama.cpp server. Start and stop recording with a desktop shortcut,
-review the transcript, then copy and paste it into your application.
+This fork adds a **native GTK 4 client for Ubuntu/GNOME on Wayland**, using the
+existing Linux Whisper/llama.cpp server. Hold a desktop shortcut, speak, and
+release to transcribe and insert into the original text field.
 
 **[Linux installation and usage →](Linux/README.md)**
 
-The client is an initial implementation: explicit clipboard delivery, a toggle
-shortcut, and the default microphone. Automatic insertion, hold-to-talk, shared
-preferences editing, and a history browser are not implemented in the Linux UI.
-The original macOS client remains available below.
+The Linux client includes portal-based hold-to-talk, guarded accessibility
+insertion, optional portal paste, microphone selection/testing, shared settings
+and dictionary editing, history/playback/export, GNOME Keyring credentials,
+login startup, and Debian packaging. Desktop portal capabilities vary by GNOME
+version; the Linux guide explains setup and fallbacks. The macOS client remains
+available below.
 
 ## Original macOS client
 
