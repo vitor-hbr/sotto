@@ -1,5 +1,20 @@
 # Sotto
 
+## Linux-native fork
+
+This fork adds a **GTK 4 client for Ubuntu/GNOME on Wayland**, using the existing
+Linux Whisper/llama.cpp server. Start and stop recording with a desktop shortcut,
+review the transcript, then copy and paste it into your application.
+
+**[Linux installation and usage →](Linux/README.md)**
+
+The client is an initial implementation: explicit clipboard delivery, a toggle
+shortcut, and the default microphone. Automatic insertion, hold-to-talk, shared
+preferences editing, and a history browser are not implemented in the Linux UI.
+The original macOS client remains available below.
+
+## Original macOS client
+
 Hold a key, speak, and release to insert your dictation. Sotto is a native macOS app backed by a model server running on the same Mac, another Mac, or Linux. Audio uploads while you speak; the server returns progress and one finished transcript.
 
 The dev runner builds **Sotto Dev**, with separate settings and visible Dev labels. For the regular app, run `./scripts/build-app.sh` and install `build/Sotto.app` in Applications. Both connect to an independently running server.

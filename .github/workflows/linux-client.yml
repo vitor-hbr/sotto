@@ -1,0 +1,24 @@
+name: Linux client
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  client:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-gst-plugins-base-1.0 gstreamer1.0-plugins-good gstreamer1.0-pulseaudio xvfb dbus-x11 desktop-file-utils
+      - name: Protocol and lifecycle tests
+        run: PYTHONPATH=Linux /usr/bin/python3 -m unittest discover -s Linux/tests -p test_client.py -v
+      - name: GTK and GStreamer tests
+        run: dbus-run-session -- xvfb-run -a env GDK_BACKEND=x11 PYTHONPATH=Linux /usr/bin/python3 -m unittest discover -s Linux/tests -p test_desktop.py -v
+      - name: Install and validate launcher
+        run: |
+          sh Linux/install.sh
+          desktop-file-validate "$HOME/.local/share/applications/io.github.vitor_hbr.Sotto.desktop"
+          "$HOME/.local/bin/sotto-linux" --help
