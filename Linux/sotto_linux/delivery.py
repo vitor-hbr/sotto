@@ -7,7 +7,7 @@ import time
 import gi
 
 gi.require_version("Atspi", "2.0")
-from gi.repository import Atspi, GLib  # noqa: E402
+from gi.repository import Atspi, Gio, GLib  # noqa: E402
 
 
 def read_text(field, start, end):
@@ -30,6 +30,11 @@ class Anchor:
 
 class FocusTracker:
     def __init__(self):
+        # libatspi can abort the process if its bus launcher is missing. Check
+        # the service first so the application can retain manual dictation.
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        bus.call_sync("org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus", "GetAddress", None,
+                      GLib.VariantType.new("(s)"), Gio.DBusCallFlags.NONE, 3000, None)
         Atspi.init()
         Atspi.set_timeout(150, 300)
         self.focused = None

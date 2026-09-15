@@ -12,7 +12,7 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-gst-plugins-base-1.0 gir1.2-atspi-2.0 gir1.2-secret-1 gstreamer1.0-plugins-good gstreamer1.0-pulseaudio xvfb dbus-x11 desktop-file-utils weston
+          sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-gst-plugins-base-1.0 gir1.2-atspi-2.0 at-spi2-core gir1.2-secret-1 gstreamer1.0-plugins-good gstreamer1.0-pulseaudio xvfb dbus-x11 desktop-file-utils weston
       - name: Protocol, lifecycle, desktop, accessibility, and portal tests
         run: dbus-run-session -- xvfb-run -a env GDK_BACKEND=x11 PYTHONPATH=Linux /usr/bin/python3 -m unittest discover -s Linux/tests -p 'test_*.py' -v
       - name: Real Wayland accessibility insertion

@@ -1,5 +1,5 @@
 """Device and desktop integration controls."""
-from gi.repository import Gtk
+from gi.repository import Gio, Gtk
 from .audio import microphones
 from .settings import Keyring
 from .views import background, page
@@ -14,6 +14,14 @@ class Desktop:
         self.auto = Gtk.CheckButton(label="Insert automatically into the original text field", active=app.config["auto_insert"])
         self.auto.connect("toggled", lambda button: self.save("auto_insert", button.get_active()))
         self.widget.append(self.auto)
+        schemas = Gio.SettingsSchemaSource.get_default()
+        schema = schemas.lookup("org.gnome.desktop.interface", True) if schemas else None
+        if schema and schema.has_key("toolkit-accessibility"):
+            self.accessibility = Gio.Settings.new_full(schema, None, None)
+            toggle = Gtk.CheckButton(label="Enable GNOME accessibility for text insertion",
+                                     active=self.accessibility.get_boolean("toolkit-accessibility"))
+            toggle.connect("toggled", self.accessibility_changed)
+            self.widget.append(toggle)
         self.widget.append(Gtk.Label(label="Automatic insertion checks focus and caret. If the destination changes, the transcript stays in Sotto.", wrap=True, xalign=0))
         self.shortcuts_status = Gtk.Label(label="Hold-to-talk is not connected.", wrap=True, xalign=0)
         self.widget.append(self.shortcuts_status)
@@ -43,6 +51,12 @@ class Desktop:
         button = Gtk.Button(label=label)
         button.connect("clicked", callback)
         self.widget.append(button)
+
+    def accessibility_changed(self, button):
+        if self.accessibility.set_boolean("toolkit-accessibility", button.get_active()):
+            self.status.set_text("Accessibility setting updated. Restart destination applications if they do not expose text fields.")
+        else:
+            self.status.set_text("GNOME did not allow changing the accessibility setting.")
 
     def save(self, key, value):
         self.app.config[key] = value

@@ -19,7 +19,7 @@ Section: sound
 Priority: optional
 Architecture: all
 Maintainer: Sotto Linux contributors
-Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-4.0, gir1.2-gst-plugins-base-1.0, gir1.2-atspi-2.0, gir1.2-secret-1, gstreamer1.0-plugins-good, gstreamer1.0-pulseaudio
+Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-4.0, gir1.2-gst-plugins-base-1.0, gir1.2-atspi-2.0, at-spi2-core, gir1.2-secret-1, gstreamer1.0-plugins-good, gstreamer1.0-pulseaudio
 Recommends: xdg-desktop-portal, xdg-desktop-portal-gnome, gnome-keyring
 Homepage: https://github.com/vitor-hbr/sotto
 Description: Native Linux desktop client for Sotto dictation

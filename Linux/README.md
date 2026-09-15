@@ -40,7 +40,7 @@ the client cannot add missing compositor capabilities.
 ```sh
 sudo apt-get update
 sudo apt-get install -y python3-gi gir1.2-gtk-4.0 \
-  gir1.2-gst-plugins-base-1.0 gir1.2-atspi-2.0 gir1.2-secret-1 \
+  gir1.2-gst-plugins-base-1.0 gir1.2-atspi-2.0 at-spi2-core gir1.2-secret-1 \
   gstreamer1.0-plugins-good gstreamer1.0-pulseaudio \
   xdg-desktop-portal xdg-desktop-portal-gnome gnome-keyring
 git clone --branch feat/linux-native https://github.com/vitor-hbr/sotto.git
@@ -95,7 +95,8 @@ queries, fragments and redirects. Plain HTTP is limited to loopback.
    choose an available trigger. The application suggests Ctrl+Alt+Space. The
    status line shows the granted shortcut. A declined or unavailable permission
    is shown explicitly and leaves no active session.
-4. Enable automatic insertion. Focus a text field, hold the shortcut, wait for
+4. Enable automatic insertion and GNOME accessibility on the Desktop tab.
+   Restart destination applications if needed. Focus a text field, hold the shortcut, wait for
    the Recording notification, speak, then release. Keep the same caret and
    field until completion. Successful insertion does not focus Sotto's window.
 5. For a terminal or an application requiring simulated paste, enable
