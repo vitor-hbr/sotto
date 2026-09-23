@@ -18,8 +18,8 @@
 #if defined(__APPLE__)
 #include <sys/event.h>
 #elif defined(__linux__)
-#include <signal.h>
-#include <sys/prctl.h>
+#include <poll.h>
+#include <sys/syscall.h>
 #endif
 
 namespace {
@@ -53,9 +53,18 @@ void libraryLog(ggml_log_level level, const char *message, void *) {
 void watchParent() {
     const pid_t parent = getppid();
     if (parent <= 1) std::_Exit(0);
-#if defined(__linux__)
-    if (prctl(PR_SET_PDEATHSIG, SIGKILL) == 0) {
+#if defined(__linux__) && defined(SYS_pidfd_open)
+    // PR_SET_PDEATHSIG fires when the spawning *thread* exits, not the server
+    // process. Swift spawns helpers from a pooled thread that exits after an
+    // idle minute, which killed every warm model. A pidfd tracks the process.
+    const int descriptor = static_cast<int>(syscall(SYS_pidfd_open, parent, 0));
+    if (descriptor >= 0) {
         if (getppid() != parent) std::_Exit(0);
+        std::thread([descriptor] {
+            pollfd watched{descriptor, POLLIN, 0};
+            while (poll(&watched, 1, -1) < 0 && errno == EINTR) {}
+            std::_Exit(0);
+        }).detach();
         return;
     }
 #elif defined(__APPLE__)

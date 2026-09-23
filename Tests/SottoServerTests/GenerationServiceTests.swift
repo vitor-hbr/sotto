@@ -352,6 +352,30 @@ final class GenerationServiceTests: XCTestCase {
     }
 
     private static let mono = AudioStreamFormat(sampleRate: 16_000, channels: 1)
+    func testIdleServiceReloadsAStoppedSpeechHelper() async throws {
+        let fixture = try Fixture(speechText: "hello", proofText: "Hello.")
+        defer { fixture.remove() }
+        let inference = NativeInference(configuration: fixture.configuration.inference)
+        try await inference.warmUp()
+        let service = try GenerationService(configuration: fixture.configuration, inference: inference)
+        await service.start()
+        // A helper that dies while the server idles must come back without a
+        // client request. Only the maintenance loop may relaunch it here, so
+        // poll the inference actor directly instead of health(), which warms too.
+        await inference.shutdown()
+        var state = await inference.readiness(proofreadingEnabled: false)
+        XCTAssertFalse(state.speechLoaded)
+        let deadline = Date().addingTimeInterval(10)
+        while !state.speechLoaded, Date() < deadline {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            state = await inference.readiness(proofreadingEnabled: false)
+        }
+        XCTAssertTrue(state.speechLoaded, "the maintenance loop did not reload the speech helper")
+        let health = await service.health()
+        XCTAssertTrue(health.ready, health.message ?? "")
+        await service.shutdown()
+    }
+
     private static func request() -> CreateGenerationRequest { CreateGenerationRequest(device: .init(id: "mac-test", name: "Test Mac")) }
     private static func audio(frames: Int) -> Data { Data(repeating: 0, count: frames * 4) }
 

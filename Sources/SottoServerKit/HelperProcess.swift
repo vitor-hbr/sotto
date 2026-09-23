@@ -301,6 +301,10 @@ actor HelperProcess {
     }
 
     private func reset(throwing error: any Error) {
+        if loaded {
+            // A warm helper is expensive to replace. Leave a trace in the journal.
+            fputs("Sotto: \(name) helper stopped: \(error.localizedDescription)\n", stderr)
+        }
         generation = UUID()
         loaded = false
         engineVersion = nil

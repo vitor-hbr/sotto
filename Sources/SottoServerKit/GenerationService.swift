@@ -36,6 +36,8 @@ public actor GenerationService {
     private var warmTask: Task<Void, Never>?
     private var expiryTask: Task<Void, Never>?
     private var warmError: String?
+    private var warmFailedAt: Date?
+    private var warmRetryDelay: TimeInterval = 30
     private var warming = false
     private var stopping = false
     private var subscribers: [UUID: [UUID: AsyncStream<GenerationRecord>.Continuation]] = [:]
@@ -104,6 +106,7 @@ public actor GenerationService {
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
                 await self?.heartbeat()
                 await self?.expireUploads()
+                await self?.keepWarm()
             }
         }
     }
@@ -124,7 +127,8 @@ public actor GenerationService {
         let writable = FileManager.default.isWritableFile(atPath: configuration.dataDirectory.path) && (try? requireDiskSpace()) != nil
         let ready = state.available && state.speechLoaded && writable
         let message = !writable ? "Server storage is unavailable or full." : (activeID != nil ? "Server is handling a recording." :
-            (ready ? "Server ready." : (warming ? "Loading server models…" : "Server models are unavailable.")))
+            (ready ? "Server ready." : (warming ? "Loading server models…" :
+                (warmError.map { "Server models failed to load: \($0)" } ?? "Server models are unavailable."))))
         if !state.speechLoaded, !warming, activeID == nil { beginWarmup() }
         return ServerHealth(isDev: configuration.development, ready: ready && activeID == nil,
             speech: ModelRuntimeInfo(modelID: "whisper-large-v3-turbo", backend: Self.speechBackend, ready: state.speechLoaded),
@@ -547,6 +551,30 @@ public actor GenerationService {
     }
     private func warmupFinished(error: String?) {
         warming = false; warmTask = nil; warmError = error
+        if let error {
+            warmFailedAt = Date()
+            fputs("Sotto: model warmup failed: \(error)\n", stderr)
+        } else {
+            warmFailedAt = nil
+            warmRetryDelay = 30
+        }
+    }
+    /// Reloads a helper that exited while idle so the first recording never waits
+    /// for a cold model. Failures back off exponentially; only verified, present
+    /// models are retried, so a missing file never causes a load loop.
+    private func keepWarm() async {
+        guard !stopping, !warming, activeID == nil else { return }
+        if let failed = warmFailedAt {
+            guard Date().timeIntervalSince(failed) >= warmRetryDelay else { return }
+            warmRetryDelay = min(600, warmRetryDelay * 2)
+        }
+        let proofreading = preferences.preferences.textCorrectionEnabled
+        let state = await inference.readiness(proofreadingEnabled: proofreading)
+        guard state.available, !warming, activeID == nil else { return }
+        if !state.speechLoaded || (proofreading && !state.proofLoaded) {
+            if warmFailedAt == nil { fputs("Sotto: a model helper is not loaded; reloading.\n", stderr) }
+            beginWarmup()
+        }
     }
     private static var speechBackend: String {
         #if os(macOS)

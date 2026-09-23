@@ -10,10 +10,12 @@ from gi.repository import Gio, GLib, Gtk
 from .api import APIError, Client
 from .audio import Microphone
 from .delivery import Delivery, FocusTracker
+from .focus import terminal_paste
+from .gnome_paste import GnomePaste
 from .desktop import Desktop
 from .portals import Paste, Portal, Shortcuts
 from .session import record
-from .settings import Keyring, Settings
+from .settings import DIRECT_MODES, Keyring, Settings
 from .views import History, Preferences, background, page
 
 
@@ -36,17 +38,28 @@ class Application(Gtk.Application):
     def do_startup(self):
         Gtk.Application.do_startup(self)
         self.hold()
-        try:
-            self.portal = Portal()
-            self.shortcuts = Shortcuts(self.portal, self.start_recording, self.stop_recording, self.shortcut_status)
-            self.paste = Paste(self.portal, self.paste_status)
-        except GLib.Error:
-            pass
+        if not self.config.get("notifications", True):
+            self.withdraw_notification("dictation")
+        native_paste = self.config["paste_backend"] == "gnome"
+        # Caps+D uses --toggle, so native paste needs no portal connection at all.
+        # The optional GlobalShortcuts integration is separate from RemoteDesktop.
+        if not native_paste or self.config["hold_to_talk"]:
+            try:
+                self.portal = Portal()
+                self.shortcuts = Shortcuts(self.portal, lambda: self.start_recording(external=True),
+                                           self.stop_recording, self.shortcut_status)
+                if not native_paste:
+                    self.paste = Paste(self.portal, self.paste_status)
+            except GLib.Error:
+                pass
+        if native_paste:
+            self.paste = GnomePaste(self.paste_status)
         try:
             self.tracker = FocusTracker()
-            self.delivery = Delivery(self.tracker, self.paste)
         except (GLib.Error, RuntimeError):
             pass
+        # Direct paste must remain available without an accessibility service.
+        self.delivery = Delivery(self.tracker, self.paste)
         show = Gio.SimpleAction.new("show", None)
         show.connect("activate", lambda *_: self.activate())
         self.add_action(show)
@@ -72,9 +85,9 @@ class Application(Gtk.Application):
         elif "stop" in options:
             self.stop_recording()
         elif "start" in options:
-            self.start_recording()
+            self.start_recording(external=True)
         elif "toggle" in options:
-            self.toggle()
+            self.toggle(external=True)
         elif "background" not in options:
             self.window.present()
         return 0
@@ -107,6 +120,15 @@ class Application(Gtk.Application):
         self.load_token()
         if self.config["hold_to_talk"] and self.shortcuts:
             GLib.idle_add(self.enable_shortcuts)
+        if self.config["delivery_mode"] in DIRECT_MODES and self.paste:
+            GLib.idle_add(self.enable_paste)
+
+    def enable_paste(self):
+        # Portal grants are session-scoped. The native backend only updates
+        # its status label here; it has no permission dialog or session.
+        if not self.quitting:
+            self.paste.enable()
+        return GLib.SOURCE_REMOVE
 
     def enable_shortcuts(self):
         if not self.quitting:
@@ -118,7 +140,7 @@ class Application(Gtk.Application):
         title = Gtk.Label(label="Your voice, where you work.", xalign=0)
         title.add_css_class("title-1")
         box.append(title)
-        box.append(Gtk.Label(label="Hold your shortcut to speak. Release to transcribe and insert.\nSet up hold-to-talk on the Desktop tab.", xalign=0, wrap=True))
+        box.append(Gtk.Label(label="Hold your shortcut to speak. Release to transcribe and insert.\nChoose your shortcut and insertion mode on the Desktop tab.", xalign=0, wrap=True))
         box.append(Gtk.Label(label="Server address", xalign=0))
         self.endpoint = Gtk.Entry(text=self.config["endpoint"])
         box.append(self.endpoint)
@@ -154,7 +176,7 @@ class Application(Gtk.Application):
         quit_button.connect("clicked", lambda _: self.request_quit())
         footer.append(quit_button)
         box.append(footer)
-        box.append(Gtk.Label(label="Closing the window keeps shortcuts active. Changed destinations keep their transcript in Sotto.", xalign=0, wrap=True))
+        box.append(Gtk.Label(label="Closing the window keeps shortcuts active. Recover transcripts from History if a paste misses its destination.", xalign=0, wrap=True))
         self.stack.add_titled(box, "dictation", "Dictation")
 
     def client(self):
@@ -210,6 +232,8 @@ class Application(Gtk.Application):
             self.desktop.paste_status.set_text(message)
 
     def notify(self, message):
+        if not self.config.get("notifications", True):
+            return
         notification = Gio.Notification.new("Sotto")
         notification.set_body(message)
         notification.set_default_action("app.show")
@@ -227,8 +251,8 @@ class Application(Gtk.Application):
             self.notify(message)
         return GLib.SOURCE_REMOVE
 
-    def toggle(self):
-        self.stop_recording() if self.busy else self.start_recording()
+    def toggle(self, external=False):
+        self.stop_recording() if self.busy else self.start_recording(external=external)
 
     def stop_recording(self):
         self.stop.set()
@@ -236,7 +260,7 @@ class Application(Gtk.Application):
             self.record_button.set_sensitive(False)
             self.record_button.set_label("Finishing…")
 
-    def start_recording(self, mode="dictation"):
+    def start_recording(self, mode="dictation", external=False):
         if self.busy or self.quitting:
             return
         self.ensure_window()
@@ -248,8 +272,24 @@ class Application(Gtk.Application):
             self.set_status(str(exc) if isinstance(exc, APIError) else "Cannot save device settings.")
             self.window.present()
             return
-        anchor = self.tracker.snapshot() if self.tracker and mode == "dictation" else None
+        delivery_mode = self.config["delivery_mode"]
+        if (external and mode == "dictation" and self.config["auto_insert"] and delivery_mode in DIRECT_MODES
+                and getattr(self.paste, "requires_permission", True)):
+            if not self.paste or not self.paste.ready:
+                # Ask before opening the microphone. Never defer a recording or
+                # replay an old transcript after a permission dialog steals focus.
+                self.set_status("Allow desktop paste access, then refocus your app and press the shortcut again.")
+                if self.paste:
+                    self.paste.enable()
+                else:
+                    self.set_status("Desktop portals are unavailable. Use manual recording and copy from History.")
+                    self.window.present()
+                return
+        guarded = external and mode == "dictation" and delivery_mode == "guarded"
+        anchor = self.tracker.snapshot() if self.tracker and guarded else None
         continuation = self.delivery.continuation(anchor, client.endpoint) if self.delivery and anchor else None
+        if not guarded and self.delivery:
+            self.delivery.previous = self.delivery.pending = None
         self.stop.clear()
         self.cancel.clear()
         self.busy = True
@@ -263,21 +303,23 @@ class Application(Gtk.Application):
         self.copy_button.set_sensitive(False)
         self.transcript.get_buffer().set_text("")
         device = {"id": self.config["device_id"], "name": socket.gethostname()[:128]}
-        microphone, auto_insert = self.config["microphone"], self.config["auto_insert"]
+        microphone = self.config["microphone"]
+        # GUI starts and microphone tests always display results for manual copying.
+        auto_insert = self.config["auto_insert"] and external
         self.stack.set_visible_child_name("dictation")
         def capture():
             return Microphone(self.stop, microphone, lambda value: GLib.idle_add(self.set_level, value))
         def work():
             return record(client, device, capture, self.stop, self.cancel,
                           lambda message: GLib.idle_add(self.set_status, message), mode=mode, continuation_id=continuation)
-        background(work, lambda result, error: self.complete(client, result, error, mode, anchor, auto_insert))
+        background(work, lambda result, error: self.complete(client, result, error, mode, anchor, auto_insert, delivery_mode))
 
     def set_level(self, value):
         if self.busy:
             self.level.set_value(value)
         return GLib.SOURCE_REMOVE
 
-    def complete(self, client, result, error, mode="dictation", anchor=None, auto_insert=False):
+    def complete(self, client, result, error, mode="dictation", anchor=None, auto_insert=False, delivery_mode="guarded"):
         if self.quitting:
             self.quit()
             return
@@ -288,22 +330,34 @@ class Application(Gtk.Application):
         self.transcript.get_buffer().set_text(text)
         self.copy_button.set_sensitive(bool(text))
         self.delivery_target = (client, result["id"])
+        # A take that stopped early is still delivered, but the user must learn
+        # why the text ends where it does, even with notifications disabled.
+        warning = result.get("clientWarning")
+        def outcome(message):
+            return f"{warning} {message}" if warning else message
         if mode == "test":
             self.report("tested", "Microphone test; no text insertion.")
-            self.finish_ui("Microphone test complete. No text was inserted.", show=True)
-        elif auto_insert and self.delivery and anchor and not self.cancel.is_set():
+            self.finish_ui(outcome("Microphone test complete. No text was inserted."), show=True)
+        elif auto_insert and self.delivery and (anchor or delivery_mode in DIRECT_MODES) and not self.cancel.is_set():
             self.copy_button.set_sensitive(False)
             self.set_status("Inserting…")
-            def delivered(outcome, error):
-                status, message = outcome if outcome else ("unconfirmed", "Delivery could not be verified. Check the destination.")
+            def delivered(outcome_, error):
+                status, message = outcome_ if outcome_ else ("unconfirmed", "Delivery could not be verified. Check the destination.")
                 if status != "none":
                     self.report(status, message)
-                self.finish_ui(message, show=status == "none")
+                self.finish_ui(outcome(message), show=status == "none" or bool(warning))
                 if status == "inserted":
                     GLib.timeout_add(250, self.remember_delivery, result["id"], client.endpoint)
-            background(lambda: self.delivery.insert(result["id"], text, anchor, client.endpoint, self.cancel.is_set), delivered)
+            if delivery_mode in DIRECT_MODES:
+                def paste():
+                    terminal = terminal_paste() if delivery_mode == "direct_auto" else delivery_mode == "direct_terminal"
+                    return self.delivery.direct_paste(result["id"], text, client.endpoint,
+                                                     terminal=terminal, cancelled=self.cancel.is_set)
+                background(paste, delivered)
+            else:
+                background(lambda: self.delivery.insert(result["id"], text, anchor, client.endpoint, self.cancel.is_set), delivered)
         else:
-            self.finish_ui("Transcript ready — copy and paste it into your application." if text else "No text to insert.", show=True)
+            self.finish_ui(outcome("Transcript ready — copy and paste it into your application." if text else "No text to insert."), show=True)
 
     def remember_delivery(self, generation_id, endpoint):
         if self.delivery and not self.busy and not self.quitting:

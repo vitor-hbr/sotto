@@ -1,6 +1,7 @@
 """GStreamer capture through the desktop's PulseAudio/PipeWire compatibility service."""
 
 import queue
+import threading
 import time
 import array
 import math
@@ -15,12 +16,19 @@ from .api import APIError
 
 
 class Microphone:
+    # Each stream buffers up to this much captured audio while uploads stall.
+    # A slow server or a busy desktop must not discard the take; the server
+    # cancels an upload only after 45 seconds without a chunk.
+    BUFFER_SECONDS = 30
+
     def __init__(self, stop, device="", level=None):
         Gst.init(None)
-        self.chunks = queue.Queue(maxsize=32)
+        self.chunks = queue.Queue()
         self.pending = bytearray()
-        self.original_chunks = queue.Queue(maxsize=64)
+        self.original_chunks = queue.Queue()
         self.original_pending = bytearray()
+        self.queued = {"inference": 0, "original": 0}
+        self.lock = threading.Lock()
         self.original_format = None
         self.original_frames = 0
         self.keep_original = False
@@ -46,16 +54,27 @@ class Microphone:
             self.pipeline.get_by_name("source").set_property("device", device)
         self.sink.connect("new-sample", self.on_sample)
 
+    def reserve(self, kind, size, bytes_per_second):
+        with self.lock:
+            if self.queued[kind] + size > self.BUFFER_SECONDS * bytes_per_second:
+                return False
+            self.queued[kind] += size
+            return True
+
+    def release(self, kind, size):
+        with self.lock:
+            self.queued[kind] = max(0, self.queued[kind] - size)
+
     def on_sample(self, sink):
         sample = sink.emit("pull-sample")
         if sample is None:
             return Gst.FlowReturn.ERROR
         buffer = sample.get_buffer()
-        try:
-            self.chunks.put_nowait(buffer.extract_dup(0, buffer.get_size()))
-        except queue.Full:
+        data = buffer.extract_dup(0, buffer.get_size())
+        if not self.reserve("inference", len(data), 16000 * 4):
             self.overflow = True
             return Gst.FlowReturn.ERROR
+        self.chunks.put(data)
         return Gst.FlowReturn.OK
 
     def on_original(self, sink):
@@ -69,11 +88,11 @@ class Microphone:
             return Gst.FlowReturn.ERROR
         self.original_format = format
         buffer = sample.get_buffer()
-        try:
-            self.original_chunks.put_nowait(buffer.extract_dup(0, buffer.get_size()))
-        except queue.Full:
+        data = buffer.extract_dup(0, buffer.get_size())
+        if not self.reserve("original", len(data), format[0] * format[1] * 4):
             self.overflow = True
             return Gst.FlowReturn.ERROR
+        self.original_chunks.put(data)
         return Gst.FlowReturn.OK
 
     def original_audio(self, inference_frames):
@@ -91,7 +110,9 @@ class Microphone:
                     self.original_frames = target
                     return pcm, rate, channels, target
             try:
-                self.original_pending.extend(self.original_chunks.get(timeout=0.1))
+                chunk = self.original_chunks.get(timeout=0.1)
+                self.release("original", len(chunk))
+                self.original_pending.extend(chunk)
             except queue.Empty:
                 if self.stopped:
                     if self.original_format:
@@ -113,12 +134,13 @@ class Microphone:
 
     def read(self):
         if self.overflow:
-            raise APIError("Audio upload could not keep up. Recording stopped; check the server connection.")
+            raise APIError(f"Audio upload fell {self.BUFFER_SECONDS} seconds behind the microphone. Check the server connection.")
         message = self.pipeline.get_bus().pop_filtered(Gst.MessageType.ERROR | Gst.MessageType.EOS)
         if message is not None:
             raise APIError("Microphone disconnected or stopped. Check GNOME sound settings.")
         try:
             chunk = self.chunks.get(timeout=0.1)
+            self.release("inference", len(chunk))
             self.last_sample = time.monotonic()
             self.pending.extend(chunk)
             # Quarter-second uploads stay well below the server's 4096-chunk
@@ -160,6 +182,8 @@ class Microphone:
             self.chunks.get_nowait()
         while not self.original_chunks.empty():
             self.original_chunks.get_nowait()
+        with self.lock:
+            self.queued = {"inference": 0, "original": 0}
 
 
 def microphones():
