@@ -4,8 +4,10 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from unittest.mock import Mock, patch
 from gi.repository import GLib
 from sotto_linux.portals import Paste, Portal, Shortcuts
 
@@ -78,6 +80,43 @@ class PortalTests(unittest.TestCase):
         keys = [(args[2], args[3]) for method, args in calls if method == "NotifyKeyboardKeysym"]
         self.assertEqual(keys, [(0xffe3, 1), (0xffe1, 1), (0x76, 1), (0x76, 0), (0xffe1, 0), (0xffe3, 0)])
         self.assertNotIn("SelectSources", [method for method, _ in calls])
+
+    def test_expired_session_call_clears_readiness_and_can_reconnect(self):
+        self.start()
+        messages = []
+        paste = Paste(self.portal, messages.append)
+        paste.enable()
+        spin(lambda: paste.ready)
+        with patch.object(self.portal, "call", side_effect=GLib.Error("Session expired")):
+            with self.assertRaises(GLib.Error):
+                paste.paste("must not retry")
+        self.assertFalse(paste.ready)
+        self.assertIsNone(paste.session)
+        spin(lambda: "reconnect" in messages[-1])
+        paste.enable()
+        spin(lambda: paste.ready)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertNotIn("NotifyKeyboardKeysym", [method for method, _ in calls])
+
+    def test_worker_failure_posts_status_on_main_thread(self):
+        portal = Mock()
+        portal.call.side_effect = GLib.Error("Session expired")
+        messages, errors = [], []
+        paste = Paste(portal, lambda message: messages.append((threading.get_ident(), message)))
+        paste.ready = True
+        paste.session = "/session"
+        def work():
+            try:
+                paste.paste("no retry")
+            except GLib.Error as error:
+                errors.append(error)
+        worker = threading.Thread(target=work)
+        worker.start()
+        spin(lambda: bool(messages) and bool(errors))
+        worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(messages[0][0], threading.get_ident())
+        self.assertFalse(paste.ready)
 
     def test_disable_while_permission_pending_cannot_resurrect_session(self):
         self.start()

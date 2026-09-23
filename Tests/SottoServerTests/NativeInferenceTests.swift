@@ -76,7 +76,7 @@ final class NativeInferenceTests: XCTestCase {
         let fixture = try Fixture(body: """
         printf '{"type":"ready"}\\n'
         IFS= read -r line
-        exec /bin/sleep 30
+        exec sleep 30
         """)
         defer { fixture.remove() }
         let inference = NativeInference(configuration: fixture.configuration(inferenceTimeout: 0.1))
@@ -90,7 +90,7 @@ final class NativeInferenceTests: XCTestCase {
     }
 
     func testLoadingDeadlineResolvesWaiter() async throws {
-        let fixture = try Fixture(body: "exec /bin/sleep 30")
+        let fixture = try Fixture(body: "exec sleep 30")
         defer { fixture.remove() }
         let inference = NativeInference(configuration: fixture.configuration(loadTimeout: 0.1))
         do {
@@ -106,7 +106,7 @@ final class NativeInferenceTests: XCTestCase {
         let fixture = try Fixture(body: """
         printf '{"type":"ready"}\\n'
         IFS= read -r line
-        exec /bin/sleep 30
+        exec sleep 30
         """)
         defer { fixture.remove() }
         let inference = NativeInference(configuration: fixture.configuration())
@@ -129,7 +129,7 @@ final class NativeInferenceTests: XCTestCase {
         printf '{"type":"ready"}\\n'
         IFS= read -r line
         awk 'BEGIN { for (i = 0; i < 70000; i++) printf "x"; printf "\\n" }'
-        exec /bin/sleep 30
+        exec sleep 30
         """)
         defer { fixture.remove() }
         let inference = NativeInference(configuration: fixture.configuration())

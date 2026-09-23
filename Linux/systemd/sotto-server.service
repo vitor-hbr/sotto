@@ -1,0 +1,21 @@
+[Unit]
+Description=Sotto local dictation server
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/sotto/runtime
+ExecStart="%h/.local/share/sotto/runtime/sotto-server" \
+    --host 127.0.0.1 --port 8391 \
+    --data-dir "%h/.local/share/sotto/server" \
+    --speech-helper "%h/.local/share/sotto/runtime/helpers/sotto-engine" \
+    --speech-model "%h/.local/share/sotto/models/ggml-large-v3-turbo.bin" \
+    --vad-model "%h/.local/share/sotto/runtime/resources/silero-vad.bin" \
+    --proof-helper "%h/.local/share/sotto/runtime/helpers/sotto-text-engine" \
+    --proof-model "%h/.local/share/sotto/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+Environment=LD_LIBRARY_PATH=/run/opengl-driver/lib
+UMask=0077
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

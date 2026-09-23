@@ -10,7 +10,9 @@ from datetime import datetime, timezone
 
 
 class APIError(RuntimeError):
-    pass
+    def __init__(self, message, status_code=None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def require(condition):
@@ -56,7 +58,7 @@ class Client:
         self.timeout = timeout
         self.opener = urllib.request.build_opener(NoRedirect())
 
-    def request(self, method, path, payload=None, *, raw=False):
+    def request(self, method, path, payload=None, *, raw=False, timeout=None):
         binary = isinstance(payload, bytes)
         data = payload if binary else (json.dumps(payload).encode() if payload is not None else None)
         headers = {"Accept": "application/json"}
@@ -66,7 +68,7 @@ class Client:
             headers["Authorization"] = "Bearer " + self.token
         request = urllib.request.Request(self.endpoint + path, data=data, headers=headers, method=method)
         try:
-            with self.opener.open(request, timeout=self.timeout) as response:
+            with self.opener.open(request, timeout=self.timeout if timeout is None else min(self.timeout, timeout)) as response:
                 limit = 268_435_500 if raw else 2_097_152
                 body = response.read(limit + 1)
                 if len(body) > limit:
@@ -81,15 +83,15 @@ class Client:
             # Do not reflect URLs, tokens, or arbitrary server error bodies in diagnostics.
             messages = {401: "Server token rejected.", 409: "Server is busy or the recording conflicted.",
                         503: "Server models are not ready."}
-            raise APIError(messages.get(exc.code, f"Server returned HTTP {exc.code}.")) from None
+            raise APIError(messages.get(exc.code, f"Server returned HTTP {exc.code}."), status_code=exc.code) from None
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise APIError("Cannot reach the server. Check its address and connection.") from exc
         except (ValueError, UnicodeError) as exc:
             raise APIError("Server returned invalid JSON.") from exc
 
-    def create(self, device, mode="dictation"):
+    def create(self, device, mode="dictation", *, request_id=None, timeout=None):
         return self.request("POST", "/v1/generations", {
-            "requestID": str(uuid.uuid4()), "device": device, "mode": mode})
+            "requestID": request_id if request_id is not None else str(uuid.uuid4()), "device": device, "mode": mode}, timeout=timeout)
 
     def generation(self, generation_id, action="", payload=None):
         # Only UUIDs from the server may become path components.

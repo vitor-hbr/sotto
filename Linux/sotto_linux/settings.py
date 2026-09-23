@@ -12,19 +12,29 @@ gi.require_version("Secret", "1")
 from gi.repository import Gio, Secret  # noqa: E402
 
 
+DIRECT_MODES = ("direct", "direct_terminal", "direct_auto")
+DELIVERY_MODES = ("guarded", *DIRECT_MODES)
+PASTE_BACKENDS = ("portal", "gnome")
+
+
 class Settings:
     def __init__(self):
         self.root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
         self.path = self.root / "sotto/client.json"
         self.data = {"endpoint": "http://localhost:8391", "device_id": str(uuid.uuid4()),
-                     "microphone": "", "auto_insert": True, "hold_to_talk": False}
+                     "microphone": "", "auto_insert": True, "hold_to_talk": False,
+                     "delivery_mode": "guarded", "notifications": True, "paste_backend": "portal"}
         self.error = None
         try:
             saved = json.loads(self.path.read_text())
             self.data.update(endpoint=str(saved["endpoint"]), device_id=str(uuid.UUID(saved["device_id"])))
-            for key in ("microphone", "auto_insert", "hold_to_talk"):
+            for key in ("microphone", "auto_insert", "hold_to_talk", "notifications"):
                 if key in saved and type(saved[key]) is type(self.data[key]):
                     self.data[key] = saved[key]
+            if saved.get("paste_backend") in PASTE_BACKENDS:
+                self.data["paste_backend"] = saved["paste_backend"]
+            if saved.get("delivery_mode") in DELIVERY_MODES:
+                self.data["delivery_mode"] = saved["delivery_mode"]
         except FileNotFoundError:
             pass
         except (OSError, ValueError, KeyError, TypeError):

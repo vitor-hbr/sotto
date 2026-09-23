@@ -126,6 +126,105 @@ class DesktopTests(unittest.TestCase):
         app.window.destroy()
         app.quit()
 
+    def test_direct_mode_can_be_selected_and_saved_without_accessibility_service(self):
+        with tempfile.TemporaryDirectory() as config, patch.dict(os.environ, {"XDG_CONFIG_HOME": config}), \
+                patch("sotto_linux.app.FocusTracker", side_effect=RuntimeError("No accessibility bus")):
+            app = Application()
+            app.set_application_id("io.github.vitor_hbr.Sotto.Test.NoAtspi")
+            self.assertTrue(app.register(None))
+            try:
+                app.ensure_window()
+                self.assertIsNone(app.tracker)
+                self.assertIsNotNone(app.delivery)
+                self.assertIs(app.delivery.paste, app.paste)
+                app.desktop.delivery_mode.set_active_id("direct_terminal")
+                self.assertEqual(app.config["delivery_mode"], "direct_terminal")
+                saved = json.loads(app.settings.path.read_text())
+                self.assertEqual(saved["delivery_mode"], "direct_terminal")
+                app.desktop.delivery_mode.set_active_id("direct_auto")
+                app.desktop.notifications.set_active(False)
+                saved = json.loads(app.settings.path.read_text())
+                self.assertEqual(saved["delivery_mode"], "direct_auto")
+                self.assertFalse(saved["notifications"])
+            finally:
+                app.window.destroy()
+                app.quit()
+                if app.portal:
+                    app.portal.close()
+
+    def test_portal_shortcut_routes_to_external_dictation(self):
+        with tempfile.TemporaryDirectory() as config, patch.dict(os.environ, {"XDG_CONFIG_HOME": config}), \
+                patch("sotto_linux.app.Shortcuts") as shortcuts:
+            app = Application()
+            app.set_application_id("io.github.vitor_hbr.Sotto.Test.Shortcut")
+            self.assertTrue(app.register(None))
+            try:
+                pressed = shortcuts.call_args.args[1]
+                with patch.object(app, "start_recording") as start:
+                    pressed()
+                    start.assert_called_once_with(external=True)
+            finally:
+                app.quit()
+                if app.portal:
+                    app.portal.close()
+                if app.tracker:
+                    app.tracker.close()
+
+    def test_native_startup_and_window_never_construct_remote_desktop(self):
+        from sotto_linux.settings import Settings
+        from sotto_linux.gnome_paste import GnomePaste
+        with tempfile.TemporaryDirectory() as config, patch.dict(os.environ, {"XDG_CONFIG_HOME": config}), \
+                patch("sotto_linux.app.Portal") as portal, patch("sotto_linux.app.Paste") as paste:
+            settings = Settings()
+            settings.data.update(paste_backend="gnome", delivery_mode="direct_auto", notifications=False)
+            settings.save()
+            app = Application()
+            app.set_application_id("io.github.vitor_hbr.Sotto.Test.NativePaste")
+            self.assertTrue(app.register(None))
+            try:
+                app.ensure_window()
+                self.assertIsInstance(app.paste, GnomePaste)
+                self.assertTrue(app.paste.ready)
+                self.assertIsNone(app.portal)
+                self.assertIsNone(app.shortcuts)
+                app.enable_paste()
+                portal.assert_not_called()
+                paste.assert_not_called()
+                self.assertIn("No Remote Desktop", app.desktop.paste_status.get_text())
+                self.assertEqual(app.desktop.paste_backend.get_active_id(), "gnome")
+                self.assertFalse(app.desktop.notifications.get_active())
+            finally:
+                app.quitting = True
+                app.window.destroy()
+                app.quit()
+                if app.tracker:
+                    app.tracker.close()
+
+    def test_saved_direct_mode_requests_paste_permission_on_startup(self):
+        from sotto_linux.settings import Settings
+        with tempfile.TemporaryDirectory() as config, patch.dict(os.environ, {"XDG_CONFIG_HOME": config}), \
+                patch("sotto_linux.app.Paste") as paste:
+            settings = Settings()
+            settings.data["delivery_mode"] = "direct_auto"
+            settings.save()
+            app = Application()
+            app.set_application_id("io.github.vitor_hbr.Sotto.Test.PasteStartup")
+            self.assertTrue(app.register(None))
+            try:
+                app.ensure_window()
+                deadline = time.monotonic() + 2
+                while not paste.return_value.enable.called and time.monotonic() < deadline:
+                    GLib.MainContext.default().iteration(False)
+                paste.return_value.enable.assert_called_once_with()
+            finally:
+                app.window.destroy()
+                app.quitting = True
+                app.quit()
+                if app.portal:
+                    app.portal.close()
+                if app.tracker:
+                    app.tracker.close()
+
     def test_real_gstreamer_conversion_and_stop_drains_queue(self):
         original = Gst.parse_launch
         def synthetic(description):

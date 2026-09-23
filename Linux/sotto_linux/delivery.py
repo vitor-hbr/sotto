@@ -99,6 +99,28 @@ class Delivery:
                 return generation_id
         return None
 
+    def direct_paste(self, generation_id, text, endpoint, terminal=False, cancelled=lambda: False):
+        self.previous = None
+        self.pending = None
+        key = (endpoint, generation_id)
+        if key in self.attempted:
+            return "unconfirmed", "Delivery was already attempted. Check the destination. Your transcript remains in History."
+        if not text:
+            return "none", "No text to paste."
+        try:
+            if cancelled():
+                return "none", "Delivery cancelled. Your transcript remains in History."
+            if self.paste is None or not self.paste.ready:
+                return "none", "Check the paste backend in Desktop settings, or copy the transcript from History."
+            # Clipboard or shortcut dispatch can fail after mutation. Never retry.
+            self.attempted.add(key)
+            sent = self.paste.paste(text, terminal=terminal, guard=lambda: not cancelled())
+            if not sent:
+                return "none", "Paste was not sent. Your transcript remains in History."
+            return "unconfirmed", "Paste shortcut sent; insertion is not verified. Your transcript remains in History."
+        except Exception:
+            return "unconfirmed", "Delivery could not be verified. Check the destination before copying. Your transcript remains in History."
+
     def insert(self, generation_id, text, anchor, endpoint, cancelled=lambda: False):
         self.previous = None
         self.pending = None
@@ -140,7 +162,7 @@ class Delivery:
                 if not sent:
                     return "none", "Destination changed before paste. Your transcript is ready to copy."
                 return "unconfirmed", "Paste sent to the original destination."
-            return "none", "This application requires portal paste. Enable it in Desktop settings, or copy the transcript."
+            return "none", "This application requires a paste backend. Check Desktop settings, or copy the transcript."
         except Exception:
             return "unconfirmed", "Delivery could not be verified. Check the destination before copying."
 

@@ -11,9 +11,30 @@ class Desktop:
         self.widget = page()
         self.status = Gtk.Label(label="Configure your Linux desktop integration.", wrap=True, xalign=0)
         self.widget.append(self.status)
-        self.auto = Gtk.CheckButton(label="Insert automatically into the original text field", active=app.config["auto_insert"])
+        self.auto = Gtk.CheckButton(label="Insert automatically after shortcut dictation", active=app.config["auto_insert"])
         self.auto.connect("toggled", lambda button: self.save("auto_insert", button.get_active()))
         self.widget.append(self.auto)
+        self.widget.append(Gtk.Label(label="Paste backend (restart Sotto after changing)", xalign=0))
+        self.paste_backend = Gtk.ComboBoxText()
+        self.paste_backend.append("portal", "Desktop portal — session permission required")
+        self.paste_backend.append("gnome", "GNOME — Vicinae + ydotool, no Remote Desktop")
+        self.paste_backend.set_active_id(app.config["paste_backend"])
+        self.paste_backend.connect("changed", lambda widget: self.save("paste_backend", widget.get_active_id()))
+        self.widget.append(self.paste_backend)
+        self.widget.append(Gtk.Label(label="Insertion mode", xalign=0))
+        self.delivery_mode = Gtk.ComboBoxText()
+        for mode, label in (("guarded", "Guarded — original accessible text field"),
+                            ("direct", "Direct paste — Ctrl+V"),
+                            ("direct_terminal", "Direct terminal paste — Ctrl+Shift+V"),
+                            ("direct_auto", "Direct paste — automatic app shortcut (GNOME)")):
+            self.delivery_mode.append(mode, label)
+        self.delivery_mode.set_active_id(app.config["delivery_mode"])
+        self.delivery_mode.connect("changed", lambda widget: self.save("delivery_mode", widget.get_active_id()))
+        self.widget.append(self.delivery_mode)
+        self.widget.append(Gtk.Label(label="Automatic mode uses the Vicinae GNOME extension to recognize terminals. It sends Ctrl+Shift+V there and Ctrl+V elsewhere. Without that extension, it uses Ctrl+V; select terminal mode manually if needed.", wrap=True, xalign=0))
+        self.notifications = Gtk.CheckButton(label="Show dictation notifications", active=app.config.get("notifications", True))
+        self.notifications.connect("toggled", lambda button: self.save("notifications", button.get_active()))
+        self.widget.append(self.notifications)
         schemas = Gio.SettingsSchemaSource.get_default()
         schema = schemas.lookup("org.gnome.desktop.interface", True) if schemas else None
         if schema and schema.has_key("toolkit-accessibility"):
@@ -22,15 +43,22 @@ class Desktop:
                                      active=self.accessibility.get_boolean("toolkit-accessibility"))
             toggle.connect("toggled", self.accessibility_changed)
             self.widget.append(toggle)
-        self.widget.append(Gtk.Label(label="Automatic insertion checks focus and caret. If the destination changes, the transcript stays in Sotto.", wrap=True, xalign=0))
+        self.widget.append(Gtk.Label(label="Guarded mode checks the original field and caret. Direct paste uses the selected backend, not accessibility: it pastes into whatever is focused when transcription finishes. Keep your intended app focused. It replaces the clipboard and cannot confirm delivery. Recover missed text from History; no automatic retry is made.", wrap=True, xalign=0))
         self.shortcuts_status = Gtk.Label(label="Hold-to-talk is not connected.", wrap=True, xalign=0)
         self.widget.append(self.shortcuts_status)
-        self.button("Enable / configure hold-to-talk", self.shortcuts)
-        self.button("Disable hold-to-talk", self.disable_shortcuts)
-        self.paste_status = Gtk.Label(label="Accessible text fields work without keyboard access. Other applications may need portal paste.", wrap=True, xalign=0)
+        native_paste = app.paste is not None and not app.paste.requires_permission
+        if native_paste and not app.shortcuts:
+            self.shortcuts_status.set_text("Use a desktop shortcut bound to sotto-linux --toggle. No portal shortcut is needed.")
+        else:
+            self.button("Enable / configure hold-to-talk", self.shortcuts)
+            self.button("Disable hold-to-talk", self.disable_shortcuts)
+        message = ("GNOME paste requires the Vicinae extension and access to ydotoold. It replaces both clipboard and primary selection. No Remote Desktop session or permission popup is used. If unavailable, recover text from History; there is no portal fallback."
+                   if native_paste else "Direct paste requires keyboard and clipboard permission for this session. Guarded accessible insertion works without it.")
+        self.paste_status = Gtk.Label(label=message, wrap=True, xalign=0)
         self.widget.append(self.paste_status)
-        self.button("Enable portal paste", lambda _: app.paste.enable() if app.paste else self.paste_status.set_text("Desktop portals are unavailable."))
-        self.button("Revoke this session's paste access", self.disable_paste)
+        if not native_paste:
+            self.button("Enable portal paste", lambda _: app.paste.enable() if app.paste else self.paste_status.set_text("Desktop portals are unavailable."))
+            self.button("Revoke this session's paste access", self.disable_paste)
         self.widget.append(Gtk.Label(label="Microphone", xalign=0))
         self.microphone = Gtk.ComboBoxText()
         self.widget.append(self.microphone)
@@ -62,6 +90,10 @@ class Desktop:
         self.app.config[key] = value
         try:
             self.app.settings.save()
+            if key == "paste_backend":
+                self.status.set_text("Backend saved. Quit and reopen Sotto to apply it.")
+            if key == "notifications" and not value:
+                self.app.withdraw_notification("dictation")
         except OSError:
             self.status.set_text("Could not save device settings.")
 
@@ -81,7 +113,7 @@ class Desktop:
     def disable_paste(self, _button):
         if self.app.paste:
             self.app.paste.disable()
-        self.paste_status.set_text("Portal paste disabled. Accessible text insertion is still available.")
+        self.paste_status.set_text("Portal paste disabled. Direct mode keeps transcripts for copying; guarded accessible insertion remains available.")
 
     def refresh_mics(self):
         self.loading_mics = True

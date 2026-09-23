@@ -57,7 +57,13 @@ Linux requires Swift 6.2+, a C/C++ toolchain, CMake, Git, curl, pkg-config, and 
 ```sh
 ./scripts/build-server.sh                  # macOS Metal/MLX; Linux CPU
 SOTTO_CUDA=ON ./scripts/build-server.sh     # Linux with CUDA
+# Linux dictation without the optional Qwen helper:
+SOTTO_CUDA=ON SOTTO_BUILD_TEXT_ENGINE=OFF ./scripts/build-server.sh
 ```
+
+For a speech-only build, disable proofreading through the preferences API or
+client settings. Keep the proof-helper and proof-model arguments configured,
+but their files are not required while proofreading is disabled.
 
 Output is `build/server`: executable, native helpers, VAD, notices, and resources. Keep the package together; the Mac proofreader requires the adjacent Metal library and bundles. Large model weights and user data live outside it.
 

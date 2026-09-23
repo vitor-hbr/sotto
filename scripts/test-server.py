@@ -3,6 +3,7 @@
 
 Creates two test generations, toggles/restores original retention, checks real
 Whisper/Qwen execution and durable artifacts. Requires an idle Dev server.
+Use --speech-only with proofreading disabled to check Whisper-only dictation.
 """
 import argparse
 import array
@@ -23,6 +24,7 @@ def main():
     parser.add_argument("--endpoint", default=os.environ.get("SOTTO_SERVER_URL", "http://127.0.0.1:8391"))
     parser.add_argument("--token-file", type=Path)
     parser.add_argument("--keep-results", action="store_true", help="Keep the two synthetic generations for UI inspection")
+    parser.add_argument("--speech-only", action="store_true", help="Require proofreading disabled; verify real Whisper and history without Qwen")
     args = parser.parse_args()
     token = args.token_file.read_text().strip() if args.token_file else ""
     root = Path(__file__).resolve().parents[1]
@@ -55,7 +57,7 @@ def main():
     while True:
         health = api("health")
         assert health["isDev"], "This test only operates on an explicitly marked Dev server"
-        if health["ready"] and health["proofreading"]["ready"]:
+        if health["ready"] and (args.speech_only or health["proofreading"]["ready"]):
             break
         assert time.monotonic() < deadline, health
         time.sleep(1)
@@ -70,7 +72,10 @@ def main():
         floats.byteswap()
     pcm = floats.tobytes()
     original = api("preferences")
-    assert original["preferences"]["textCorrectionEnabled"], "Enable proofreading for this full model integration test"
+    if args.speech_only:
+        assert not original["preferences"]["textCorrectionEnabled"], "Disable proofreading for the speech-only integration test"
+    else:
+        assert original["preferences"]["textCorrectionEnabled"], "Enable proofreading for this full model integration test"
     created = []
     own_revision = original["revision"]
     summary = []
@@ -111,7 +116,8 @@ def main():
             assert states[-1] == "completed", states
             assert "country" in result["rawText"].lower(), result["rawText"]
             assert result["speech"]["modelSHA256"] == "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69"
-            assert result["textProcessing"]["status"] in ("applied", "unchanged", "rejected"), result["textProcessing"]
+            expected_processing = ("disabled",) if args.speech_only else ("applied", "unchanged", "rejected")
+            assert result["textProcessing"]["status"] in expected_processing, result["textProcessing"]
             assert result["device"] == device
             assert bool(result.get("originalAudio")) == keep_original
             for kind in (["inference", "original"] if keep_original else ["inference"]):

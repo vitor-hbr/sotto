@@ -11,10 +11,11 @@ recognition and llama.cpp proofreading. No browser runtime is involved.
 - Automatic insertion into the original accessible text field, with focus,
   caret, selection and surrounding-text checks. Unicode insertion is verified;
   an ambiguous write is never retried. Password fields are excluded.
-- Optional RemoteDesktop + Clipboard portal paste for applications such as
-  terminals. It requests keyboard/clipboard access only, with Ctrl+Shift+V for
-  terminal widgets and Ctrl+V elsewhere. No screen or pointer access is requested.
-- Microphone selection and testing, live input level, recording notifications,
+- Optional RemoteDesktop + Clipboard portal paste. Guarded mode checks the
+  original accessible field. Direct mode pastes into the currently focused app
+  without requiring accessibility, using Ctrl+V or Ctrl+Shift+V as selected.
+  Only keyboard/clipboard access is requested, not screen or pointer access.
+- Microphone selection and testing, live input level, optional recording notifications,
   bounded streaming uploads, cancellation and a three-minute recording limit.
 - Original audio retains the negotiated source rate/channels; inference audio
   is independently resampled to mono 16 kHz. Both cover the same interval.
@@ -29,6 +30,8 @@ recognition and llama.cpp proofreading. No browser runtime is involved.
   field and caret still match. Editor text and accessibility handles stay local.
 
 ## Install
+
+For NixOS, use the [native Nix setup](NIXOS.md) instead of the Debian installer.
 
 The client runs on Ubuntu 24.04+ with GTK 4 and Python 3.10+. **Hold-to-talk needs
 a desktop implementing the GlobalShortcuts portal. Portal paste also needs the
@@ -95,22 +98,51 @@ queries, fragments and redirects. Plain HTTP is limited to loopback.
    choose an available trigger. The application suggests Ctrl+Alt+Space. The
    status line shows the granted shortcut. A declined or unavailable permission
    is shown explicitly and leaves no active session.
-4. Enable automatic insertion and GNOME accessibility on the Desktop tab.
-   Restart destination applications if needed. Focus a text field, hold the shortcut, wait for
-   the Recording notification, speak, then release. Keep the same caret and
-   field until completion. Successful insertion does not focus Sotto's window.
-5. For a terminal or an application requiring simulated paste, enable
-   **portal paste** and approve keyboard/clipboard access in GNOME's dialog.
-   Session access can be revoked in Sotto or through the desktop indicator.
+4. Enable automatic insertion and choose an **Insertion mode** on the Desktop tab:
+   - **Guarded** (the default): enable GNOME accessibility and restart destination
+     applications if needed. Keep the original text field and caret unchanged.
+   - **Direct paste — Ctrl+V**: paste into the app focused when transcription
+     finishes, even if it exposes no accessible text field.
+   - **Direct terminal paste — Ctrl+Shift+V**: use the terminal paste shortcut,
+     including in terminals without accessible text fields such as Ghostty.
+   - **Direct paste — automatic app shortcut (GNOME)**: use the Vicinae window
+     API to select Ctrl+Shift+V for recognized terminals and Ctrl+V otherwise.
+     Without this optional extension, the fallback is Ctrl+V. App identity is
+     queried locally at delivery; window titles are not used or stored.
+   Clear **Show dictation notifications** for silent operation.
+   Focus your target, hold the shortcut, pause briefly or wait for the Recording notification,
+   speak, then release. In direct mode, keep the intended app focused until
+   completion. Direct mode does not inspect the field, exclude password fields,
+   or check whether focus changed. Use it only when you accept that tradeoff.
+5. Choose a **Paste backend**, then restart Sotto:
+   - **Desktop portal** (the default): click **Enable portal paste** and approve
+     keyboard/clipboard access. Saved direct mode requests permission at startup.
+     If access expires, the next shortcut requests it before recording. Approve,
+     refocus the destination, and press the shortcut again.
+   - **GNOME — Vicinae + ydotool**: requires the Vicinae GNOME extension and a
+     running, accessible `ydotoold`. It uses the extension's plain-text clipboard
+     API and ydotool's Ctrl+V or Ctrl+Shift+V key events. Bind `--toggle` as a GNOME
+     custom shortcut. With hold-to-talk disabled, this path opens no Sotto portal
+     connection and has no permission step before the first recording.
+     It replaces both clipboard and primary selection. If either dependency
+     fails, recover the transcript from History; there is no portal fallback.
+   Existing transcripts are never replayed automatically.
 6. Optionally enable **Start Sotto when I log in**. Closing the window keeps
    shortcuts available; use Quit Sotto to end the process and portal sessions.
 
-Automatic delivery depends on the destination application's accessibility
-support. A changed caret, text selection, inaccessible destination, revoked
-permission or ambiguous write leaves the transcript available in Sotto. Check
-the destination before copying after an unconfirmed delivery. Portal paste
-replaces the clipboard and reports `unconfirmed`, because sending a shortcut
-does not prove the destination accepted it. It never triggers a second attempt.
+Guarded delivery depends on the destination application's accessibility
+support. A changed caret, text selection, or inaccessible destination prevents
+insertion. Direct paste does not require accessibility or an original caret;
+its destination is whichever app is focused at completion. Both modes leave
+completed recordings in **History**, including when paste misses its target or
+permission is unavailable. History is stored by the server before delivery;
+pasting does not remove it. Select a recording to copy its text again.
+
+Simulated paste replaces the clipboard and reports `unconfirmed`, because sending
+a shortcut does not prove the destination accepted it. It never triggers a
+second attempt. Check the destination before copying after an unconfirmed
+paste. Direct paste does not reuse continuation context. Insertion mode is
+frozen when each take starts; changing it affects the next take.
 
 ### Command shortcut fallback
 
@@ -153,8 +185,9 @@ recording and artifacts from the server. Active recordings cannot be deleted.
   retained by the server. There is no offline queue or silent retry.
 - History playback uses a private temporary WAV, removed on stop, selection
   change or normal quit. Text exports remain at the location you choose.
-- Accessibility tracking inspects only the focused text field and a small local
-  context around its caret. The context is never sent to the server or logged.
+- In guarded mode, accessibility tracking inspects only the focused text field
+  and a small local context around its caret. The context is never sent to the
+  server or logged. Direct mode does not capture a field/caret anchor.
 
 ## Verification
 

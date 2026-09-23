@@ -225,6 +225,8 @@ class Shortcuts:
 
 class Paste:
     """Optional clipboard + keyboard portal; no screen or pointer access requested."""
+    requires_permission = True
+
     def __init__(self, portal, changed):
         self.portal = portal
         self.changed = changed
@@ -278,6 +280,16 @@ class Paste:
     def paste(self, text, terminal=False, guard=lambda: True):
         if not self.ready:
             raise PortalError("Enable portal paste in Desktop settings first.")
+        try:
+            return self._paste(text, terminal, guard)
+        except GLib.Error:
+            # An invalid session must not stay marked ready indefinitely.
+            # The next shortcut asks for fresh permission, never retries text.
+            self.disable()
+            GLib.idle_add(self.changed, "Paste access lost. Use the dictation shortcut to reconnect.")
+            raise
+
+    def _paste(self, text, terminal, guard):
         self.content = text.encode("utf-8")
         self.portal.call("Clipboard", "SetSelection", "(oa{sv})",
                          (self.session, {"mime_types": GLib.Variant("as", ["text/plain;charset=utf-8", "text/plain"])}))
