@@ -21,7 +21,7 @@ Requests are bounded to 1 MiB. Vocabulary allows at most 8,192 terms, 16 KiB per
 
 ## Decoding and lifecycle
 
-A CPU Silero pass rejects nonspeech (threshold 0.5, minimum speech segment 120 ms). If speech is detected, Whisper receives the complete recording. Decoding uses beam search 5, temperature 0, and internal timestamp tokens; the returned transcript is plain text. Segments above Whisper's no-speech threshold are excluded. This remains probabilistic and can miss quiet speech.
+A CPU Silero pass rejects nonspeech (threshold 0.5, minimum speech segment 120 ms). If speech is detected, Whisper receives every speech segment with 200 ms of padding, and each longer pause is shortened to 0.4 seconds of the recorded pause audio. Whisper otherwise fills long pauses with invented text and repetition loops. Decoding uses beam search 5 at temperature 0 and internal timestamp tokens; the returned transcript is plain text. A window that decodes to repeated text or has a low average log-probability is decoded again at a temperature 0.2 higher, up to 1.0. If a loop survives, the transcript keeps one copy of any unit repeated back to back: 8 or more copies of a 2–15-byte unit, or 4 or more of a 16–96-byte phrase. Segments above Whisper's no-speech threshold are excluded. This remains probabilistic and can miss quiet speech.
 
 The server keeps the model warm. Terminating the helper cancels active work. `{"type":"quit"}`, stdin EOF, or parent death releases it. Native dependencies and Metal source are embedded in the speech executable.
 

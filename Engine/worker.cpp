@@ -158,6 +158,72 @@ std::variant<Audio, std::string> readAudio(const std::string &path) {
     return Audio{std::move(samples), duration, silent};
 }
 
+// Whisper fills long silences with invented text ("Thank you.", subtitle
+// credits, vocabulary hints) and repetition loops that can swallow the rest of
+// a 30-second window. Keep every detected speech segment, with its padding,
+// and shorten each pause between segments to at most pauseSamples. The kept
+// pause is real recorded audio, half from each side, so no splice lands on
+// speech.
+std::vector<float> speechOnly(const std::vector<float> &samples, whisper_vad_segments *segments) {
+    constexpr size_t pauseSamples = WHISPER_SAMPLE_RATE * 2 / 5;
+    const auto sampleAt = [&samples](float centiseconds) {
+        return std::min(samples.size(), static_cast<size_t>(std::max(0.0f, centiseconds) * WHISPER_SAMPLE_RATE / 100));
+    };
+    std::vector<float> kept;
+    kept.reserve(samples.size());
+    size_t previousEnd = 0;
+    for (int i = 0; i < whisper_vad_segments_n_segments(segments); ++i) {
+        const auto start = std::max(previousEnd, sampleAt(whisper_vad_segments_get_segment_t0(segments, i)));
+        const auto end = std::max(start, sampleAt(whisper_vad_segments_get_segment_t1(segments, i)));
+        if (i > 0) {
+            const auto pause = start - previousEnd;
+            if (pause <= pauseSamples) {
+                kept.insert(kept.end(), samples.begin() + previousEnd, samples.begin() + start);
+            } else {
+                kept.insert(kept.end(), samples.begin() + previousEnd, samples.begin() + previousEnd + pauseSamples / 2);
+                kept.insert(kept.end(), samples.begin() + start - pauseSamples / 2, samples.begin() + start);
+            }
+        }
+        kept.insert(kept.end(), samples.begin() + start, samples.begin() + end);
+        previousEnd = end;
+    }
+    return kept;
+}
+
+// Temperature fallback can still end on a loop ("Codex Codex ...",
+// "1.1.1.1...", "shushushu...", one sentence over and over). Keep one copy of
+// a 2 to 15 byte unit repeated at least eight times in a row, or of a 16 to 96
+// byte phrase repeated at least four times. Dictation rarely repeats itself
+// that often, and single repeated characters ("1000000") stay intact.
+std::string collapseLoops(const std::string &text) {
+    constexpr size_t minUnit = 2;
+    constexpr size_t phraseUnit = 16;
+    constexpr size_t maxUnit = 96;
+    const auto minCopies = [](size_t unit) -> size_t { return unit < phraseUnit ? 8 : 4; };
+    std::string result;
+    result.reserve(text.size());
+    size_t position = 0;
+    while (position < text.size()) {
+        // Dropping whole copies keeps valid UTF-8: the text after the dropped
+        // copies starts with the same bytes as the kept one.
+        size_t dropped = 0;
+        for (size_t unit = minUnit; unit <= maxUnit && position + unit * minCopies(unit) <= text.size(); ++unit) {
+            size_t copies = 1;
+            while (position + (copies + 1) * unit <= text.size() &&
+                   text.compare(position + copies * unit, unit, text, position, unit) == 0) {
+                ++copies;
+            }
+            if (copies >= minCopies(unit)) {
+                dropped = (copies - 1) * unit;
+                break;
+            }
+        }
+        position += dropped;
+        result.push_back(text[position++]);
+    }
+    return result;
+}
+
 std::string trim(std::string text) {
     constexpr auto space = " \t\r\n";
     const auto first = text.find_first_not_of(space);
@@ -296,6 +362,10 @@ void transcribe(whisper_context *context, whisper_vad_context *vad, int threads,
         auto detection = whisper_vad_default_params();
         detection.threshold = 0.5f;
         detection.min_speech_duration_ms = 120;
+        // Padding keeps quiet word onsets and endings; speechOnly shortens what
+        // remains of each pause.
+        detection.min_silence_duration_ms = 300;
+        detection.speech_pad_ms = 200;
         const std::unique_ptr<whisper_vad_segments, decltype(&whisper_vad_free_segments)> segments(
             whisper_vad_segments_from_probs(vad, detection), whisper_vad_free_segments);
         if (!segments) {
@@ -303,8 +373,7 @@ void transcribe(whisper_context *context, whisper_vad_context *vad, int threads,
             return;
         }
         audio.silent = whisper_vad_segments_n_segments(segments.get()) == 0;
-        // Keep the complete recording when there is speech; this avoids cutting
-        // off quiet word boundaries or short pauses inside a sentence.
+        if (!audio.silent) audio.samples = speechOnly(audio.samples, segments.get());
     }
     if (!audio.silent) {
         auto parameters = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH);
@@ -326,7 +395,10 @@ void transcribe(whisper_context *context, whisper_vad_context *vad, int threads,
         parameters.prompt_n_tokens = static_cast<int>(hints.tokens.size());
         parameters.carry_initial_prompt = !hints.tokens.empty();
         parameters.temperature = 0;
-        parameters.temperature_inc = 0; // Deterministic, bounded dictation latency.
+        // A window whose text repeats (low entropy) or has a low average
+        // log-probability is decoded again at a higher temperature. Without
+        // this fallback, a repetition loop was returned as the transcript.
+        parameters.temperature_inc = 0.2f;
         parameters.beam_search.beam_size = 5;
         parameters.no_speech_thold = 0.6f;
         parameters.progress_callback = reportProgress;
@@ -345,7 +417,7 @@ void transcribe(whisper_context *context, whisper_vad_context *vad, int threads,
         }
     }
     reportProgress(nullptr, nullptr, 100, &progress);
-    emit({{"type", "result"}, {"id", *id}, {"text", trim(std::move(text))},
+    emit({{"type", "result"}, {"id", *id}, {"text", trim(collapseLoops(text))},
           {"duration", audio.duration}, {"elapsed", std::chrono::duration<double>(Clock::now() - start).count()},
           {"language", detectedLanguage}, {"includedTerms", hints.included}, {"omittedTerms", hints.omitted},
           {"tokenCount", hints.tokens.size()}, {"tokenBudget", hints.tokenBudget}});

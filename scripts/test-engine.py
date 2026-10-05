@@ -265,6 +265,20 @@ def main():
                     assert "<|" not in result["text"], "Timestamp tokens leaked into plain text"
                     print("Passed: every repeated passage survives across decoding windows with vocabulary hints", flush=True)
 
+                    # A long pause inside one recording must add no text.
+                    room = random.Random(7)
+                    pause = [room.gauss(0, 0.002) for _ in range(16000 * 20)]
+                    paused = temporary / "paused-speech.wav"
+                    float_audio(paused, samples + pause + samples)
+                    result = engine.transcribe(paused, "paused-speech", language="en",
+                                               vocabularyTerms=["MiniMax", "Codex"])
+                    assert result["type"] == "result", result
+                    words = re.findall(r"[a-z]+", result["text"].lower())
+                    passage = re.findall(r"[a-z]+", engine.transcribe(args.audio, "passage", language="en")["text"].lower())
+                    assert " ".join(words).count("ask not what your country can do for you") == 2, result
+                    assert len(words) <= 2 * len(passage) + 2, result
+                    print("Passed: a 20-second pause between passages adds no text", flush=True)
+
                 # Silence after speech must not inherit the previous transcript.
                 assert engine.transcribe(pcm, "after-speech")["text"] == ""
                 assert engine.transcribe(noise, "noise-after-speech")["text"] == ""
